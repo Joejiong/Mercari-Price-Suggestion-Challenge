@@ -6,7 +6,7 @@ import nltk
 
 from scipy.sparse import csr_matrix, hstack
 from gensim import corpora, models, similarities
-from gensim.models.doc2vec import LabeledSentence
+from gensim.models.doc2vec import TaggedDocument
 from sklearn.linear_model import Ridge
 from sklearn.feature_extraction.text import CountVectorizer, TfidfVectorizer
 from sklearn.preprocessing import LabelBinarizer
@@ -23,18 +23,20 @@ MAX_FEATURES_ITEM_DESCRIPTION = 50000
 class LabeledLineSentence(object):
     def __init__(self, dataset):
         self.data = dataset
+
     def __iter__(self):
         for uid, line in enumerate(self.data['item_description']):
-            yield LabeledSentence(words=line.lower().split(), labels=['SENT_%s' % uid])
+            yield TaggedDocument(line.lower().split(), ['SENT_%s' % uid])
 
 
 def get_doc_vector(dataset):
-    
     texts = LabeledLineSentence(dataset)
-    d2v = models.doc2vec.Doc2Vec(size=300, min_count=2,iter=55)
+    d2v = models.doc2vec.Doc2Vec(size=300, min_count=2, iter=20,workers=4)
     d2v.build_vocab(texts)
     d2v.train(texts, total_examples=d2v.corpus_count, epochs=d2v.iter)
-    return np.array(d2v.docvecs['SENT_%s'%uid] for uid in range(data.shape[0]))
+    return np.array(
+        d2v.docvecs['SENT_%s' % uid] for uid in range(dataset.shape[0]))
+
 
 def handle_missing_inplace(dataset):
     dataset['category_name'].fillna(value='missing', inplace=True)
@@ -43,16 +45,21 @@ def handle_missing_inplace(dataset):
 
 
 def cutting(dataset):
-    pop_brand = dataset['brand_name'].value_counts().loc[lambda x: x.index != 'missing'].index[:NUM_BRANDS]
-    dataset.loc[~dataset['brand_name'].isin(pop_brand), 'brand_name'] = 'missing'
-    pop_category = dataset['category_name'].value_counts().loc[lambda x: x.index != 'missing'].index[:NUM_CATEGORIES]
-    dataset.loc[~dataset['category_name'].isin(pop_category), 'category_name'] = 'missing'
+    pop_brand = dataset['brand_name'].value_counts().loc[
+                    lambda x: x.index != 'missing'].index[:NUM_BRANDS]
+    dataset.loc[
+        ~dataset['brand_name'].isin(pop_brand), 'brand_name'] = 'missing'
+    pop_category = dataset['category_name'].value_counts().loc[
+                       lambda x: x.index != 'missing'].index[:NUM_CATEGORIES]
+    dataset.loc[~dataset['category_name'].isin(
+        pop_category), 'category_name'] = 'missing'
 
 
 def to_categorical(dataset):
     dataset['category_name'] = dataset['category_name'].astype('category')
     dataset['brand_name'] = dataset['brand_name'].astype('category')
-    dataset['item_condition_id'] = dataset['item_condition_id'].astype('category')
+    dataset['item_condition_id'] = dataset['item_condition_id'].astype(
+        'category')
 
 
 def main():
@@ -80,47 +87,55 @@ def main():
     print('[{}] Finished to cut'.format(time.time() - start_time))
 
     to_categorical(merge)
-    print('[{}] Finished to convert categorical'.format(time.time() - start_time))
+    print('[{}] Finished to convert categorical'.format(
+        time.time() - start_time))
 
     cv = CountVectorizer(min_df=NAME_MIN_DF)
     X_name = cv.fit_transform(merge['name'])
-    print('[{}] Finished count vectorize `name`'.format(time.time() - start_time))
+    print('[{}] Finished count vectorize `name`'.format(
+        time.time() - start_time))
 
     cv = CountVectorizer()
     X_category = cv.fit_transform(merge['category_name'])
-    print('[{}] Finished count vectorize `category_name`'.format(time.time() - start_time))
+    print('[{}] Finished count vectorize `category_name`'.format(
+        time.time() - start_time))
 
-
-    X_doc2vec = get_doc_vector(merge)  
-    print('[{}] Finished DOC2VEC `item_description`'.format(time.time() - start_time))    
+    X_doc2vec = get_doc_vector(merge)
+    print('[{}] Finished DOC2VEC `item_description`'.format(
+        time.time() - start_time))
     lb = LabelBinarizer(sparse_output=True)
     X_brand = lb.fit_transform(merge['brand_name'])
-    print('[{}] Finished label binarize `brand_name`'.format(time.time() - start_time))
+    print('[{}] Finished label binarize `brand_name`'.format(
+        time.time() - start_time))
 
-    X_dummies = csr_matrix(pd.get_dummies(merge[['item_condition_id', 'shipping']],
-                                          sparse=True).values)
-    print('[{}] Finished to get dummies on `item_condition_id` and `shipping`'.format(time.time() - start_time))
+    X_dummies = csr_matrix(
+        pd.get_dummies(merge[['item_condition_id', 'shipping']],
+                       sparse=True).values)
+    print(
+        '[{}] Finished to get dummies on `item_condition_id` and `shipping`'.format(
+            time.time() - start_time))
 
-    sparse_merge = hstack((X_dummies, X_doc2vec, X_brand, X_category, X_name)).tocsr()
-    print('[{}] Finished to create sparse merge'.format(time.time() - start_time))
+    sparse_merge = hstack(
+        (X_dummies, X_doc2vec, X_brand, X_category, X_name)).tocsr()
+    print('[{}] Finished to create sparse merge'.format(
+        time.time() - start_time))
 
     X = sparse_merge[:nrow_train]
     X_test = sparse_merge[nrow_train:]
 
-    
     model = Ridge(fit_intercept=True, random_state=666, alpha=5)
     model.fit(X, y)
     print('[{}] Finished to train ridge sag'.format(time.time() - start_time))
     predsR = model.predict(X=X_test)
-    print('[{}] Finished to predict ridge sag'.format(time.time() - start_time))
+    print(
+        '[{}] Finished to predict ridge sag'.format(time.time() - start_time))
 
-
-
-    train_X, valid_X, train_y, valid_y = train_test_split(X, y, test_size = 0.15, random_state = 666) 
+    train_X, valid_X, train_y, valid_y = train_test_split(X, y, test_size=0.15,
+                                                          random_state=666)
     d_train = lgb.Dataset(train_X, label=train_y, max_bin=8192)
     d_valid = lgb.Dataset(valid_X, label=valid_y, max_bin=8192)
     watchlist = [d_train, d_valid]
-    
+
     params = {
         'learning_rate': 0.65,
         'application': 'regression',
@@ -130,8 +145,7 @@ def main():
         'metric': 'RMSE',
         'nthread': 4
     }
-    
-    
+
     params2 = {
         'learning_rate': 0.75,
         'application': 'regression',
@@ -141,30 +155,33 @@ def main():
         'metric': 'RMSE',
         'nthread': 4
     }
-    
 
-    model = lgb.train(params, train_set=d_train, num_boost_round=7500, valid_sets=watchlist, \
-    early_stopping_rounds=500, verbose_eval=500) 
+    model = lgb.train(params, train_set=d_train, num_boost_round=7500,
+                      valid_sets=watchlist, \
+                      early_stopping_rounds=500, verbose_eval=500)
     predsL = model.predict(X_test)
-    
+
     print('[{}] Finished to predict lgb 1'.format(time.time() - start_time))
-    
-    
-    train_X2, valid_X2, train_y2, valid_y2 = train_test_split(X, y, test_size = 0.15, random_state = 666) 
+
+    train_X2, valid_X2, train_y2, valid_y2 = train_test_split(X, y,
+                                                              test_size=0.15,
+                                                              random_state=666)
     d_train2 = lgb.Dataset(train_X2, label=train_y2, max_bin=8192)
     d_valid2 = lgb.Dataset(valid_X2, label=valid_y2, max_bin=8192)
     watchlist2 = [d_train2, d_valid2]
 
-    model = lgb.train(params2, train_set=d_train2, num_boost_round=3000, valid_sets=watchlist2, \
-    early_stopping_rounds=50, verbose_eval=500) 
+    model = lgb.train(params2, train_set=d_train2, num_boost_round=3000,
+                      valid_sets=watchlist2, \
+                      early_stopping_rounds=50, verbose_eval=500)
     predsL2 = model.predict(X_test)
 
     print('[{}] Finished to predict lgb 2'.format(time.time() - start_time))
-    
-    preds = predsR*0.2 + predsL*0.4 + predsL2*0.4
+
+    preds = predsR * 0.2 + predsL * 0.4 + predsL2 * 0.4
 
     submission['price'] = np.expm1(preds)
     submission.to_csv("submission_lgbm_ridge_1.csv", index=False)
+
 
 if __name__ == '__main__':
     main()
